@@ -4,7 +4,7 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
+app.use(express.json({ strict: false }));
 app.use(express.static(path.join(__dirname, "public")));
 
 const bugs = [];
@@ -22,9 +22,24 @@ app.get("/api/bugs", (req, res) => {
 });
 
 app.post("/api/bugs", (req, res) => {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+        return res.status(400).json({
+            message: "Title and description are required."
+        });
+    }
+
     const { title, description } = req.body;
 
-    if (!title || !description) {
+    if (typeof title !== "string" || typeof description !== "string") {
+        return res.status(400).json({
+            message: "Title and description are required."
+        });
+    }
+
+    const normalizedTitle = title.trim();
+    const normalizedDescription = description.trim();
+
+    if (!normalizedTitle || !normalizedDescription) {
         return res.status(400).json({
             message: "Title and description are required."
         });
@@ -32,8 +47,8 @@ app.post("/api/bugs", (req, res) => {
 
     const bug = {
         id: nextId++,
-        title: title.trim(),
-        description: description.trim(),
+        title: normalizedTitle,
+        description: normalizedDescription,
         status: "Reported",
         severity: "Pending triage",
         createdAt: new Date().toISOString()
@@ -43,6 +58,10 @@ app.post("/api/bugs", (req, res) => {
     res.status(201).json(bug);
 });
 
-app.listen(PORT, () => {
-    console.log(`CampusOps running at http://localhost:${PORT}`);
-});
+if (require.main === module) {
+    app.listen(PORT, () => {
+        console.log(`CampusOps running at http://localhost:${PORT}`);
+    });
+}
+
+module.exports = app;
