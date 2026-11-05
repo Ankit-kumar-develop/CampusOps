@@ -20,15 +20,15 @@ h2{font-size:19px;margin:30px 0 16px}
 .tag{display:inline-block;background:#193d39;color:#68e4b4;padding:5px 9px;border-radius:20px;font-size:11px;margin-top:12px}
 .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
 .metric strong{font-size:27px;display:block;margin-bottom:6px}
-.pipeline{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.pipeline{display:grid;grid-template-columns:repeat(7,minmax(150px,1fr));gap:12px;overflow-x:auto}
 .column{background:#111a2c;border:1px solid #263149;border-radius:12px;padding:15px;min-height:125px}
 .column h3{font-size:13px;color:#aab8d0}
 .task{background:#202c43;border-radius:8px;padding:12px;font-size:13px;margin-top:12px}
 button{background:#7188ff;color:white;border:0;padding:11px 16px;border-radius:8px;cursor:pointer;font-weight:600}
 input{background:#0e1729;color:white;border:1px solid #34435e;padding:12px;border-radius:8px;width:100%;margin:10px 0}
 #message{color:#68e4b4;font-size:13px}
-@media(max-width:750px){.grid,.metrics,.pipeline{grid-template-columns:1fr 1fr}}
-@media(max-width:480px){.grid,.metrics,.pipeline{grid-template-columns:1fr}}
+@media(max-width:750px){.grid,.metrics{grid-template-columns:1fr 1fr}}
+@media(max-width:480px){.grid,.metrics{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -61,9 +61,12 @@ input{background:#0e1729;color:white;border:1px solid #34435e;padding:12px;borde
  <h2>Development Pipeline</h2>
  <div class="pipeline">
   <div class="column"><h3>01 · Reported</h3><div id="reported"></div></div>
-  <div class="column"><h3>02 · In Development</h3><div id="development"></div></div>
-  <div class="column"><h3>03 · QA Review</h3><div id="qa"></div></div>
-  <div class="column"><h3>04 · Human Approval</h3><div id="approval"></div></div>
+  <div class="column"><h3>02 · Triaged</h3><div id="triaged"></div></div>
+  <div class="column"><h3>03 · In Development</h3><div id="development"></div></div>
+  <div class="column"><h3>04 · QA Review</h3><div id="qa-review"></div></div>
+  <div class="column"><h3>05 · Human Approval</h3><div id="human-approval"></div></div>
+  <div class="column"><h3>06 · Approved</h3><div id="approved"></div></div>
+  <div class="column"><h3>07 · Rejected</h3><div id="rejected"></div></div>
  </div>
  <p class="muted" style="margin-top:30px">CampusOps Hackathon Demo · Human approval required before merging or deployment.</p>
 </main>
@@ -87,12 +90,17 @@ async function loadBugs(){
   const response=await fetch('/api/bugs');
   const bugs=await response.json();
   document.getElementById('bugCount').textContent=String(bugs.length).padStart(2,'0');
-  document.getElementById('taskCount').textContent=String(bugs.filter(b=>b.status!=='Reported').length).padStart(2,'0');
-  ['reported','development','qa','approval'].forEach(id=>document.getElementById(id).innerHTML='');
-  const columns={Reported:'reported',Development:'development',QA:'qa',Approval:'approval'};
+  document.getElementById('taskCount').textContent=String(bugs.filter(b=>['Triaged','In Development','QA Review','Human Approval'].includes(b.status)).length).padStart(2,'0');
+  ['reported','triaged','development','qa-review','human-approval','approved','rejected'].forEach(id=>document.getElementById(id).innerHTML='');
+  const columns={Reported:'reported',Triaged:'triaged','In Development':'development','QA Review':'qa-review','Human Approval':'human-approval',Approved:'approved',Rejected:'rejected'};
   bugs.forEach(b=>{
-   const el=document.createElement('div');el.className='task';el.textContent=b.title;
-   document.getElementById(columns[b.status]||'reported').appendChild(el);
+   const column=columns[b.status];
+   if(!column)return;
+   const el=document.createElement('div');el.className='task';
+   const title=document.createElement('strong');title.textContent=b.title;
+   const severity=document.createElement('div');severity.className='muted';severity.textContent=b.severity;
+   el.append(title,severity);
+   document.getElementById(column).appendChild(el);
   });
  }catch(e){console.error(e)}
 }
