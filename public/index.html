@@ -1,0 +1,102 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CampusOps | AI Development Team</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0b1020;color:#e8edf8;font-family:Segoe UI,Arial,sans-serif}
+header{padding:24px 5%;border-bottom:1px solid #263149;display:flex;justify-content:space-between;align-items:center}
+h1{margin:0;font-size:25px}
+.sub{color:#91a0ba;font-size:13px;margin-top:5px}
+.status{color:#54dfaa;font-size:13px}
+main{max-width:1200px;margin:35px auto;padding:0 24px}
+h2{font-size:19px;margin:30px 0 16px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.card{background:#141d32;border:1px solid #293650;border-radius:13px;padding:20px}
+.card h3{margin:0 0 10px;font-size:16px}
+.muted{color:#91a0ba;font-size:13px;line-height:1.6}
+.tag{display:inline-block;background:#193d39;color:#68e4b4;padding:5px 9px;border-radius:20px;font-size:11px;margin-top:12px}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.metric strong{font-size:27px;display:block;margin-bottom:6px}
+.pipeline{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.column{background:#111a2c;border:1px solid #263149;border-radius:12px;padding:15px;min-height:125px}
+.column h3{font-size:13px;color:#aab8d0}
+.task{background:#202c43;border-radius:8px;padding:12px;font-size:13px;margin-top:12px}
+button{background:#7188ff;color:white;border:0;padding:11px 16px;border-radius:8px;cursor:pointer;font-weight:600}
+input{background:#0e1729;color:white;border:1px solid #34435e;padding:12px;border-radius:8px;width:100%;margin:10px 0}
+#message{color:#68e4b4;font-size:13px}
+@media(max-width:750px){.grid,.metrics,.pipeline{grid-template-columns:1fr 1fr}}
+@media(max-width:480px){.grid,.metrics,.pipeline{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+ <div><h1>⚡ CampusOps</h1><div class="sub">AI-powered software development collaboration</div></div>
+ <div class="status">● System Online</div>
+</header>
+<main>
+ <h2>Project Overview</h2>
+ <div class="metrics">
+  <div class="card metric"><strong>03</strong><span class="muted">AI Agents</span></div>
+  <div class="card metric"><strong id="bugCount">00</strong><span class="muted">Bug Reports</span></div>
+  <div class="card metric"><strong id="taskCount">00</strong><span class="muted">Active Tasks</span></div>
+  <div class="card metric"><strong>01</strong><span class="muted">Human Owner</span></div>
+ </div>
+ <h2>Your AI Development Team</h2>
+ <div class="grid">
+  <div class="card"><h3>🔎 Triager</h3><p class="muted">Analyses incoming bug reports, identifies severity and assigns actionable tasks.</p><span class="tag">Coordinator</span></div>
+  <div class="card"><h3>💻 Developer</h3><p class="muted">Investigates issues and proposes maintainable code fixes on isolated branches.</p><span class="tag">Implementation</span></div>
+  <div class="card"><h3>🧪 QA Reviewer</h3><p class="muted">Independently reviews proposed changes and verifies test results.</p><span class="tag">Quality Assurance</span></div>
+ </div>
+ <h2>Report a Bug</h2>
+ <div class="card">
+  <p class="muted">Submit an issue for the CampusOps team to investigate.</p>
+  <input id="bugTitle" placeholder="Bug title">
+  <input id="bugDescription" placeholder="Describe what went wrong">
+  <button onclick="submitBug()">Submit bug report</button>
+  <p id="message"></p>
+ </div>
+ <h2>Development Pipeline</h2>
+ <div class="pipeline">
+  <div class="column"><h3>01 · Reported</h3><div id="reported"></div></div>
+  <div class="column"><h3>02 · In Development</h3><div id="development"></div></div>
+  <div class="column"><h3>03 · QA Review</h3><div id="qa"></div></div>
+  <div class="column"><h3>04 · Human Approval</h3><div id="approval"></div></div>
+ </div>
+ <p class="muted" style="margin-top:30px">CampusOps Hackathon Demo · Human approval required before merging or deployment.</p>
+</main>
+<script>
+async function submitBug(){
+ const title=document.getElementById('bugTitle').value.trim();
+ const description=document.getElementById('bugDescription').value.trim();
+ const message=document.getElementById('message');
+ if(!title||!description){message.textContent='Please enter both a title and description.';return}
+ try{
+  const response=await fetch('/api/bugs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,description})});
+  if(!response.ok)throw new Error('Request failed');
+  document.getElementById('bugTitle').value='';
+  document.getElementById('bugDescription').value='';
+  message.textContent='Bug report submitted successfully!';
+  loadBugs();
+ }catch(e){message.textContent='Could not submit report. Please try again.'}
+}
+async function loadBugs(){
+ try{
+  const response=await fetch('/api/bugs');
+  const bugs=await response.json();
+  document.getElementById('bugCount').textContent=String(bugs.length).padStart(2,'0');
+  document.getElementById('taskCount').textContent=String(bugs.filter(b=>b.status!=='Reported').length).padStart(2,'0');
+  ['reported','development','qa','approval'].forEach(id=>document.getElementById(id).innerHTML='');
+  const columns={Reported:'reported',Development:'development',QA:'qa',Approval:'approval'};
+  bugs.forEach(b=>{
+   const el=document.createElement('div');el.className='task';el.textContent=b.title;
+   document.getElementById(columns[b.status]||'reported').appendChild(el);
+  });
+ }catch(e){console.error(e)}
+}
+loadBugs();
+</script>
+</body>
+</html>
