@@ -37,7 +37,7 @@ async function createBug(title, description = `${title} description`) {
 before(async () => {
     tempDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "campusops-tests-"));
     databasePath = path.join(tempDirectory, "test.sqlite");
-    app = createApp({ databasePath, approvalToken: "test-approval-token" });
+    app = createApp({ databasePath, approvalToken: "test-approval-token", outboxToken: "test-outbox-token" });
     server = createServer(app);
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -53,6 +53,20 @@ after(async () => {
 
 test("the database file is created automatically", () => {
     assert.equal(fs.existsSync(databasePath), true);
+});
+
+test("the application connection enforces foreign keys without integrity violations", () => {
+    assert.equal(app.locals.database.prepare("PRAGMA foreign_keys").get().foreign_keys, 1);
+    assert.deepEqual(app.locals.database.prepare("PRAGMA foreign_key_check").all(), []);
+});
+
+test("the application connection rejects an orphan outbox event", () => {
+    assert.throws(() => {
+        app.locals.database.prepare(`
+            INSERT INTO outbox (eventType, bugId, payload, createdAt)
+            VALUES (?, ?, ?, ?)
+        `).run("bug.created", 999999, "{}", new Date().toISOString());
+    }, /FOREIGN KEY constraint failed/);
 });
 
 test("GET /api/health reports the service status", async () => {
@@ -91,6 +105,93 @@ test("POST /api/bugs creates and returns a normalized report", async () => {
     const listResponse = await fetch(`${baseUrl}/api/bugs`);
     assert.equal(listResponse.status, 200);
     assert.deepEqual(await listResponse.json(), [bug]);
+});
+
+test("bug creation persists a matching pending outbox event", async () => {
+    const { response, bug } = await createBug("Outbox persistence", "Persist this event too");
+    assert.equal(response.status, 201);
+    const pending = await fetch(`${baseUrl}/api/outbox/pending`, {
+        headers: { Authorization: "Bearer test-outbox-token" }
+    });
+    const events = await pending.json();
+    const event = events.find((item) => item.bugId === bug.id);
+    assert.equal(pending.status, 200);
+    assert.ok(event);
+    assert.equal(event.eventType, "bug.created");
+    assert.deepEqual(event.payload, bug);
+    assert.equal(event.createdAt, bug.createdAt);
+});
+
+test("outbox endpoints require their dedicated bearer token", async () => {
+    for (const authorization of [undefined, "Bearer wrong-token"]) {
+        const headers = authorization ? { Authorization: authorization } : {};
+        const response = await fetch(`${baseUrl}/api/outbox/pending`, { headers });
+        assert.equal(response.status, 403);
+    }
+});
+
+test("outbox acknowledgements persist once and disappear from pending events", async () => {
+    const { bug } = await createBug("Acknowledgement report");
+    const pendingResponse = await fetch(`${baseUrl}/api/outbox/pending`, {
+        headers: { Authorization: "Bearer test-outbox-token" }
+    });
+    const event = (await pendingResponse.json()).find((item) => item.bugId === bug.id);
+    const headers = { Authorization: "Bearer test-outbox-token" };
+    const unauthorized = await fetch(`${baseUrl}/api/outbox/${event.id}/ack`, { method: "POST" });
+    assert.equal(unauthorized.status, 403);
+    const first = await fetch(`${baseUrl}/api/outbox/${event.id}/ack`, { method: "POST", headers });
+    assert.equal(first.status, 200);
+    assert.ok(Number.isNaN(Date.parse((await first.json()).acknowledgedAt)) === false);
+
+    const duplicate = await fetch(`${baseUrl}/api/outbox/${event.id}/ack`, { method: "POST", headers });
+    assert.equal(duplicate.status, 409);
+    const pendingAgain = await fetch(`${baseUrl}/api/outbox/pending`, { headers });
+    assert.equal((await pendingAgain.json()).some((item) => item.id === event.id), false);
+});
+
+test("bug and outbox writes roll back together when outbox persistence fails", async () => {
+    const failurePath = path.join(tempDirectory, "outbox-failure.sqlite");
+    const failureApp = createApp({ databasePath: failurePath });
+    const failureDatabase = new DatabaseSync(failurePath);
+    failureDatabase.exec("PRAGMA foreign_keys = ON");
+    failureDatabase.exec(`
+        CREATE TRIGGER fail_outbox_insert BEFORE INSERT ON outbox
+        BEGIN SELECT RAISE(ABORT, 'simulated outbox failure'); END
+    `);
+    failureDatabase.close();
+    const failureServer = createServer(failureApp);
+    await new Promise((resolve) => failureServer.listen(0, "127.0.0.1", resolve));
+    try {
+        const response = await fetch(`http://127.0.0.1:${failureServer.address().port}/api/bugs`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title: "Must roll back", description: "The event cannot be saved" })
+        });
+        assert.equal(response.status, 500);
+        const bugs = await fetch(`http://127.0.0.1:${failureServer.address().port}/api/bugs`);
+        assert.deepEqual(await bugs.json(), []);
+    } finally {
+        await new Promise((resolve, reject) => {
+            failureServer.close((error) => error ? reject(error) : resolve());
+        });
+        failureApp.locals.closeDatabase();
+    }
+});
+
+test("outbox endpoints fail closed when no outbox token is configured", async () => {
+    const noTokenPath = path.join(tempDirectory, "no-outbox-token.sqlite");
+    const noTokenApp = createApp({ databasePath: noTokenPath });
+    const noTokenServer = createServer(noTokenApp);
+    await new Promise((resolve) => noTokenServer.listen(0, "127.0.0.1", resolve));
+    try {
+        const response = await fetch(`http://127.0.0.1:${noTokenServer.address().port}/api/outbox/pending`);
+        assert.equal(response.status, 503);
+    } finally {
+        await new Promise((resolve, reject) => {
+            noTokenServer.close((error) => error ? reject(error) : resolve());
+        });
+        noTokenApp.locals.closeDatabase();
+    }
 });
 
 for (const field of ["title", "description"]) {
@@ -173,6 +274,7 @@ test("POST /api/bugs rejects a request without JSON content type", async () => {
 test("legacy pending-triage severity is migrated to Medium", async () => {
     const legacyPath = path.join(tempDirectory, "legacy.sqlite");
     const legacyDatabase = new DatabaseSync(legacyPath);
+    legacyDatabase.exec("PRAGMA foreign_keys = ON");
     legacyDatabase.exec(`
         CREATE TABLE bugs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -284,6 +386,7 @@ test("terminal status changes fail closed when no approval token is configured",
     const noTokenPath = path.join(tempDirectory, "no-approval-token.sqlite");
     const noTokenApp = createApp({ databasePath: noTokenPath, approvalToken: "" });
     const database = new DatabaseSync(noTokenPath);
+    database.exec("PRAGMA foreign_keys = ON");
     database.prepare(`
         INSERT INTO bugs (title, description, status, severity, createdAt)
         VALUES (?, ?, ?, ?, ?)
@@ -317,13 +420,15 @@ test("POST /api/bugs stores multiple reports with increasing IDs", async () => {
         createdBugs.push(bug);
     }
 
-    assert.deepEqual(createdBugs.map((bug) => bug.id), [3, 4]);
+    assert.deepEqual(createdBugs.map((bug) => bug.id), [5, 6]);
 
     const response = await fetch(`${baseUrl}/api/bugs`);
     const bugs = await response.json();
-    assert.equal(bugs.length, 4);
+    assert.equal(bugs.length, 6);
     assert.deepEqual(bugs.map((bug) => bug.title), [
         "Broken login",
+        "Outbox persistence",
+        "Acknowledgement report",
         "Rejectable report",
         "Second report",
         "Third report"
@@ -336,7 +441,7 @@ test("bug reports survive an application restart", async () => {
     });
     app.locals.closeDatabase();
 
-    app = createApp({ databasePath });
+    app = createApp({ databasePath, outboxToken: "test-outbox-token" });
     server = createServer(app);
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -345,13 +450,32 @@ test("bug reports survive an application restart", async () => {
     const bugs = await response.json();
 
     assert.equal(response.status, 200);
-    assert.equal(bugs.length, 4);
-    assert.deepEqual(bugs.map((bug) => bug.id), [1, 2, 3, 4]);
+    assert.equal(bugs.length, 6);
+    assert.deepEqual(bugs.map((bug) => bug.id), [1, 2, 3, 4, 5, 6]);
     assert.deepEqual(bugs.map((bug) => bug.status), [
         "Approved",
+        "Reported",
+        "Reported",
         "Rejected",
         "Reported",
         "Reported"
     ]);
     assert.equal(bugs[0].severity, "Low");
+
+    const pendingResponse = await fetch(`${baseUrl}/api/outbox/pending`, {
+        headers: { Authorization: "Bearer test-outbox-token" }
+    });
+    const pendingEvents = await pendingResponse.json();
+    assert.equal(pendingEvents.length, 5);
+    assert.ok(pendingEvents.every((event) => event.eventType === "bug.created"));
+
+    const linkedRows = app.locals.database.prepare(`
+        SELECT outbox.bugId, bugs.id AS existingBugId, outbox.payload
+        FROM outbox LEFT JOIN bugs ON bugs.id = outbox.bugId
+        ORDER BY outbox.id
+    `).all();
+    assert.equal(linkedRows.length, 6);
+    assert.ok(linkedRows.every((row) => row.existingBugId === row.bugId));
+    assert.ok(linkedRows.every((row) => JSON.parse(row.payload).id === row.bugId));
+    assert.deepEqual(app.locals.database.prepare("PRAGMA foreign_key_check").all(), []);
 });

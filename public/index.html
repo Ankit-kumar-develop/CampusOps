@@ -25,6 +25,7 @@ h2{font-size:19px;margin:30px 0 16px}
 .column h3{font-size:13px;color:#aab8d0}
 .task{background:#202c43;border-radius:8px;padding:12px;font-size:13px;margin-top:12px}
 button{background:#7188ff;color:white;border:0;padding:11px 16px;border-radius:8px;cursor:pointer;font-weight:600}
+.task button{margin-top:10px;padding:8px 10px;font-size:12px}
 input{background:#0e1729;color:white;border:1px solid #34435e;padding:12px;border-radius:8px;width:100%;margin:10px 0}
 #message{color:#68e4b4;font-size:13px}
 @media(max-width:750px){.grid,.metrics{grid-template-columns:1fr 1fr}}
@@ -68,7 +69,7 @@ input{background:#0e1729;color:white;border:1px solid #34435e;padding:12px;borde
   <div class="column"><h3>06 · Approved</h3><div id="approved"></div></div>
   <div class="column"><h3>07 · Rejected</h3><div id="rejected"></div></div>
  </div>
- <p class="muted" style="margin-top:30px">CampusOps Hackathon Demo · Human approval required before merging or deployment.</p>
+ <p class="muted" style="margin-top:30px">CampusOps Hackathon Demo · Agent handoff is manual: copy a Triager brief into your chosen agent workflow. No Switch connection is active. Human approval is required before merging or deployment.</p>
 </main>
 <script>
 async function submitBug(){
@@ -100,9 +101,32 @@ async function loadBugs(){
    const title=document.createElement('strong');title.textContent=b.title;
    const severity=document.createElement('div');severity.className='muted';severity.textContent=b.severity;
    el.append(title,severity);
+   if(b.status==='Reported'){
+    const handoff=document.createElement('button');
+    handoff.type='button';handoff.textContent='Copy Triager brief (manual)';
+    handoff.addEventListener('click',()=>copyTriagerBrief(b,handoff));
+    el.appendChild(handoff);
+   }
    document.getElementById(column).appendChild(el);
   });
  }catch(e){console.error(e)}
+}
+async function copyTriagerBrief(bug,button){
+ const brief=[
+  'CampusOps manual Triager handoff',
+  `Bug ID: ${bug.id}`,
+  `Title: ${bug.title}`,
+  `Description: ${bug.description}`,
+  `Reported at: ${bug.createdAt}`
+ ].join('\n');
+ try{
+  await navigator.clipboard.writeText(brief);
+  button.textContent='Brief copied';
+  setTimeout(()=>button.textContent='Copy Triager brief (manual)',1800);
+ }catch(e){
+  button.textContent='Copy unavailable';
+  document.getElementById('message').textContent='Clipboard access was unavailable. Copy the report details from the dashboard.';
+ }
 }
 loadBugs();
 </script>

@@ -47,10 +47,12 @@ function hasValidApprovalToken(authorization, expectedToken) {
 
 function createApp({
     databasePath = process.env.CAMPUSOPS_DB_PATH || path.join(__dirname, "campusops.sqlite"),
-    approvalToken = process.env.CAMPUSOPS_APPROVAL_TOKEN || ""
+    approvalToken = process.env.CAMPUSOPS_APPROVAL_TOKEN || "",
+    outboxToken = process.env.CAMPUSOPS_OUTBOX_TOKEN || ""
 } = {}) {
     fs.mkdirSync(path.dirname(databasePath), { recursive: true });
     const database = new DatabaseSync(databasePath);
+    database.exec("PRAGMA foreign_keys = ON");
     database.exec(`
         CREATE TABLE IF NOT EXISTS bugs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,6 +64,16 @@ function createApp({
         )
     `);
     database.prepare("UPDATE bugs SET severity = 'Medium' WHERE severity = 'Pending triage'").run();
+    database.exec(`
+        CREATE TABLE IF NOT EXISTS outbox (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            eventType TEXT NOT NULL,
+            bugId INTEGER NOT NULL REFERENCES bugs(id),
+            payload TEXT NOT NULL,
+            createdAt TEXT NOT NULL,
+            acknowledgedAt TEXT
+        )
+    `);
 
     const listBugs = database.prepare(`
         SELECT id, title, description, status, severity, createdAt
@@ -79,6 +91,16 @@ function createApp({
     `);
     const updateBugSeverity = database.prepare("UPDATE bugs SET severity = ? WHERE id = ?");
     const updateBugStatus = database.prepare("UPDATE bugs SET status = ? WHERE id = ?");
+    const listPendingEvents = database.prepare(`
+        SELECT id, eventType, bugId, payload, createdAt
+        FROM outbox WHERE acknowledgedAt IS NULL ORDER BY id
+    `);
+    const getEventById = database.prepare("SELECT id, acknowledgedAt FROM outbox WHERE id = ?");
+    const acknowledgeEvent = database.prepare("UPDATE outbox SET acknowledgedAt = ? WHERE id = ? AND acknowledgedAt IS NULL");
+    const insertEvent = database.prepare(`
+        INSERT INTO outbox (eventType, bugId, payload, createdAt)
+        VALUES (?, ?, ?, ?)
+    `);
 
     const app = express();
     app.use(express.json({ strict: false }));
@@ -93,6 +115,45 @@ function createApp({
 
     app.get("/api/bugs", (req, res) => {
         res.json(listBugs.all());
+    });
+
+    app.get("/api/outbox/pending", (req, res) => {
+        if (!outboxToken) {
+            return res.status(503).json({ message: "Manual handoff access is not configured." });
+        }
+        if (!hasValidApprovalToken(req.get("authorization"), outboxToken)) {
+            return res.status(403).json({ message: "Manual handoff authorization is required." });
+        }
+        res.json(listPendingEvents.all().map((event) => ({
+            ...event,
+            payload: JSON.parse(event.payload)
+        })));
+    });
+
+    app.post("/api/outbox/:id/ack", (req, res) => {
+        if (!outboxToken) {
+            return res.status(503).json({ message: "Manual handoff access is not configured." });
+        }
+        if (!hasValidApprovalToken(req.get("authorization"), outboxToken)) {
+            return res.status(403).json({ message: "Manual handoff authorization is required." });
+        }
+        const eventId = parseBugId(req.params.id);
+        if (eventId === null) {
+            return res.status(400).json({ message: "Event ID must be a positive integer." });
+        }
+        const event = getEventById.get(eventId);
+        if (!event) {
+            return res.status(404).json({ message: "Outbox event not found." });
+        }
+        if (event.acknowledgedAt !== null) {
+            return res.status(409).json({ message: "Outbox event was already acknowledged." });
+        }
+        const acknowledgedAt = new Date().toISOString();
+        const result = acknowledgeEvent.run(acknowledgedAt, eventId);
+        if (Number(result.changes) !== 1) {
+            return res.status(409).json({ message: "Outbox event was already acknowledged." });
+        }
+        res.json({ id: eventId, acknowledgedAt });
     });
 
     app.patch("/api/bugs/:id/severity", (req, res) => {
@@ -183,20 +244,30 @@ function createApp({
         const status = "Reported";
         const severity = "Medium";
         const createdAt = new Date().toISOString();
-        const result = insertBug.run(normalizedTitle, normalizedDescription, status, severity, createdAt);
-        const bug = {
-            id: Number(result.lastInsertRowid),
-            title: normalizedTitle,
-            description: normalizedDescription,
-            status,
-            severity,
-            createdAt
-        };
+        let bug;
+        database.exec("BEGIN IMMEDIATE");
+        try {
+            const result = insertBug.run(normalizedTitle, normalizedDescription, status, severity, createdAt);
+            bug = {
+                id: Number(result.lastInsertRowid),
+                title: normalizedTitle,
+                description: normalizedDescription,
+                status,
+                severity,
+                createdAt
+            };
+            insertEvent.run("bug.created", bug.id, JSON.stringify(bug), createdAt);
+            database.exec("COMMIT");
+        } catch (error) {
+            database.exec("ROLLBACK");
+            return res.status(500).json({ message: "Could not save bug report and handoff event." });
+        }
 
         res.status(201).json(bug);
     });
 
     app.locals.closeDatabase = () => database.close();
+    app.locals.database = database;
     return app;
 }
 
