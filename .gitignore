@@ -8,3 +8,8 @@ Thumbs.db
 coverage/
 dist/
 campusops.sqlite
+*.sqlite
+*.sqlite3
+*.db
+*.sqlite-shm
+*.sqlite-wal
